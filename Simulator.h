@@ -15,6 +15,10 @@ const unsigned int MAX_STACK = 1000000; // Grows downwards.
 
 const unsigned int TOTAL_INSTRUCTIONS = 53;
 
+// FN means it is a function, so it gets the R (register) encoding scheme
+// OP means an operation, so it has an opcode and gets the I (immediate) encoding scheme.
+// Some OP instructions get the jump encoding scheme if they are jumps.
+// Some FN instructions have their own special encodings like syscall or mtlo.
 enum Instruction
 {
     ADD = 0,  // FN, R
@@ -82,12 +86,17 @@ enum Instruction
     BGE
 };
 
+
+// Structure used to keep track of instructions
+// and where they are in memory.
 struct InputAddressPair
 {
     std::string input;
     uint32_t address;
 };
 
+// Structure to keep track of a list of instructions
+// to be encoded, or data to be put into the data segment.
 struct StrsAddressSegmentLine
 {
     std::vector< std::string > strs;
@@ -96,6 +105,7 @@ struct StrsAddressSegmentLine
     unsigned int line;
 };
 
+// Simple enum to keep track of which segment you are in.
 enum MipsSegment
 {
     NONE, // Not in a segment, awaiting segment change.
@@ -170,6 +180,7 @@ public:
         &Simulator::ins_bltz,
         }
     {
+        // Init the stack pointer to be at the end of the stack.
         regs[29] = STACK_END - 1;
     }
 
@@ -216,12 +227,10 @@ private:
 
     std::unordered_map< std::string, uint32_t > labels;
     
-    /*
-      This vector of instructions and encodings
-      is stored in the order they are addressed in,
-      starting with 0x00400000 and going up from there.
-      Every instruction is of size 0x00000004.
-    */
+    // This vector of instructions and encodings
+    // is stored in the order they are addressed in,
+    // starting with 0x00400000 and going up from there.
+    // Every instruction is of size 0x00000004.
     std::vector< InputAddressPair > input_addr;
 
     // A vector or instructions to be encoded as well as data
@@ -229,6 +238,7 @@ private:
     // values of the input labels. Used by read file mode.
     std::vector< StrsAddressSegmentLine > to_be_encoded;
 
+    // valid inputs to save to file in interpreter mode.
     std::vector< std::string > valid_sim_inputs;
 
     // An array of all of the members to execute certain
@@ -239,7 +249,7 @@ private:
     ////////// FUNCTIONS //////////
     ///////////////////////////////
     
-    // Simulator mode functions.
+    // Interpreter mode functions.
     void run_simulator_mode();
     bool valid_label(const std::string & s) const; // shared
     void interpret_input(std::string input);

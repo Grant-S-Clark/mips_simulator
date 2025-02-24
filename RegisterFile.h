@@ -35,11 +35,16 @@ public:
     { return *(x_ + i); }
 
     // This does allow you to change ANY register value, even the zero register,
-    // but I will simply just assume that you wont do that unless you are
-    // a buffoon and allow it.
+    // but I will simply just assume that you wont do it.
     int32_t & operator[](const int i)
     { return *(x_ + i); }
 
+    // hi and lo registers are used for multiplication and division
+    // to store results
+    // Multiplication b.c. of overflowing out of 32 bits
+    // Division to store both remainder and result of division.
+    // These registers can only be accessed via the mflo and mfhi registers
+    
     int32_t hi() const
     { return hi_; }
     int32_t & hi()

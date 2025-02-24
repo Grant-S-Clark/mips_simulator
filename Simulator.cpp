@@ -4,6 +4,9 @@
 
 #include "Simulator.h"
 
+
+// Main runner function, lets user decide what mode to run
+// in and begins execution.
 void Simulator::run()
 {
     std::string input;
@@ -38,12 +41,14 @@ void Simulator::run()
     return;
 }
 
-////////////////////////////////
-///// Write mode functions /////
-////////////////////////////////
+//////////////////////////////////////
+///// Interpreter mode functions /////
+//////////////////////////////////////
 
+// Run the inpterpreter mode of the simulator.
 void Simulator::run_simulator_mode()
 {
+    // Default to text segment
     current_segment = TEXT;
     
     program_counter = text_seg_addr;
@@ -59,7 +64,9 @@ void Simulator::run_simulator_mode()
         
         std::string input;
         std::getline(std::cin, input);
-        
+
+        // Attempt to interpret the input and inform user about
+        // errors.
         try
         {
             interpret_input(input);
@@ -79,6 +86,8 @@ void Simulator::run_simulator_mode()
 }
 
 
+// Make sure labels only contain valid characters and dont
+// start with a digit.
 bool Simulator::valid_label(const std::string & s) const
 {
     // Cannot begin with a digit.
@@ -93,52 +102,53 @@ bool Simulator::valid_label(const std::string & s) const
     return true;
 }
 
+// Handle an input from the user in interpreter mode.
 void Simulator::interpret_input(std::string input)
 {
+    // Get rid of comments and make sure whitespace is
+    // consistent.
     input = truncate_comments(input);
     input = strip_useless_whitespace(input);
 
+    // Ignore empty string
     if (input.size() == 0)
-        return; // Empty string, ignore.
-    
-    // Simulator commands
+        return;
+
+    // Handle non-mips simulator commands.
     if (input == "?")
     {
         print_simulator_help();
-        return;
     }
     
     else if (input == "regs")
     {
         print_registers();
-        return;
     }
 
     else if (input == "labels")
     {
         print_labels();
-        return;
     }
 
     else if (input == "data")
     {
         print_data_segment();
-        return;
     }
 
-    // Command for jumping to a previously entered instruction
+    // Non-mips command for jumping to a previously entered instruction
     // Without locking yourself into an infinite loop using a jump.
     // This will only acccept hexadecimal addresses.
     else if (input.substr(0, 4) == "goto")
     {
         std::string addr_str = input.substr(5);
         uint32_t addr = std::stoi(addr_str, 0, 16);
-        if (addr >= 0x00040000 && addr < 0x10010000 && addr % 4 == 0
-            && program_counter > addr)
+        if (addr >= 0x00040000 && addr < 0x10010000 && addr % 4 == 0 // Make sure valid and within text segment.
+            && program_counter > addr) // You cant goto a point in front of the program counter
         {
             uint32_t curr_pc = program_counter;
             program_counter = addr;
-            
+
+            // Execute instructions in the text segment from addr to the program counter's value
             while (program_counter != curr_pc)
             {
                 execute(text[(program_counter - TEXT_START) >> 2]);
@@ -146,13 +156,12 @@ void Simulator::interpret_input(std::string input)
         }
         else
             throw SimulatorError("Invalid hexadecimal goto address.");
-
-        return;
     }
 
     // Command for saving to file.
     else if (input.substr(0, 6) == "saveto")
     {
+        // Get the filename to save to.
         std::string filename = input.substr(7);
         std::cout << "filename=" << filename << std::endl;
 
@@ -160,228 +169,233 @@ void Simulator::interpret_input(std::string input)
         ofs.open(filename, std::ofstream::out | std::ofstream::trunc);
         if (ofs.fail())
             throw SimulatorError("Invalid filename for saveto command.");
+
+        // Put all the valid commands entered so far into the file.
         for (const std::string & s : valid_sim_inputs)
             ofs << s << '\n';
         ofs.close();
-            
-        return;
     }
 
-    std::string saved_input = input;
-    input = replace_registers(input);
-    
-    std::vector< std::string > strs = split_input(input);
-
-    // Label input
-    if (strs[0].back() == ':')
-    {
-        if (!valid_label(strs[0].substr(0, strs[0].size() - 1)))
-            throw SimulatorError("Invalid label.");
-        
-        // Put label into the label hashtable
-        strs[0].pop_back();
-        if (labels.find(strs[0]) != labels.end())
-            throw SimulatorError("Duplicate label.");
-        labels[strs[0]] = program_counter;
-
-        // Append onto input list.
-        valid_sim_inputs.push_back(strs[0] + ":");
-
-        // Stop computing if that was the only thing that was
-        // input.
-        if (strs.size() == 1)
-            return;
-
-        // Remove label from input for storage of the
-        // string of the command seperately.
-        saved_input = saved_input.substr(strs[0].size() + 2);
-
-        // Remove the label from the strings and continue.
-        strs.erase(strs.begin());
-    }
-
-    // Change hexidecimal and binary numbers into base 10.
-    format_immediates(strs);
-
-    // Handle the pseudoinstructions if necessary.
-    if (current_segment == TEXT)
-    {
-        // Check for pseudoinstructions
-        Instruction pseudo = is_pseudo(strs[0], strs.back());
-        if (pseudo)
-        {
-            sim_currently_pseudo = true;
-            handle_pseudo(pseudo, strs);
-            sim_currently_pseudo = false;
-            
-            // Append onto input list.
-            valid_sim_inputs.push_back(saved_input);
-            
-            return;
-        }
-    }
-    
-    // Format the labels into base 10 numbers from map.
-    replace_labels(strs);
-
-    /*
-       '.' input, check to see if it is a segment change or
-       if it denotes an entrypoint (".globl main"). If not,
-       check to see if you are in the data segment and act
-       accordingly depending on the input.
-    */
-    if (strs[0][0] == '.')
-    {
-        // Segment change
-        if (strs.size() == 1)
-        {
-            if (strs[0] == ".text")
-            {
-                // Do nothing.
-                if (current_segment == TEXT)
-                {
-                    // Append onto input list.
-                    valid_sim_inputs.push_back(saved_input);
-                    return;
-                }
-                
-                current_segment = TEXT;
-                data_seg_addr = program_counter;
-                program_counter = text_seg_addr;
-            }
-
-            else if (strs[0] == ".data")
-            {
-                // Do nothing.
-                if (current_segment == DATA)
-                {
-                    // Append onto input list.
-                    valid_sim_inputs.push_back(saved_input);
-                    return;
-                }
-                   
-                current_segment = DATA;
-                text_seg_addr = program_counter;
-                program_counter = data_seg_addr;
-            }
-
-            // Append onto input list.
-            valid_sim_inputs.push_back(saved_input);
-            
-            return;
-        }
-
-        // ".globl < label > "
-        // Simply just put this onto the input list.
-        if (strs.size() == 2 && strs[0] == ".globl")
-        {
-            if (!valid_label(strs[1]))
-                throw SimulatorError("Invalid label.");
-
-            // Append onto input list.
-            valid_sim_inputs.push_back(saved_input);
-            
-            return;
-        }
-
-        // data segment input
-        add_to_data_segment(strs);
-    }
-    
-    // DEBUGGING
-    // std::cout << strs << std::endl;
-
-    // Text segment execute instruction.
-    if (current_segment == TEXT)
-    {
-        // Perform encoding and execute.
-        uint32_t encoding = encode(strs);
-
-        // DEBUGGING
-        // std::cout << std::bitset<32>(encoding) << std::endl;
-
-        input_addr.push_back({input, program_counter});
-
-        // Attempt execution of the encoded instruction.
-        try
-        {
-            uint32_t old_pc = program_counter;
-            execute(encoding);
-            
-            // Store the encoding
-            text[(old_pc - TEXT_START) >> 2] = encoding;
-            
-            // if you jumped, execute instructions at that location.
-            while (program_counter != old_pc + 4)
-            {
-                execute(text[(program_counter - TEXT_START) >> 2]);
-            }
-        }
-        catch (SimulatorError & e)
-        {
-            input_addr.pop_back();
-            throw e;
-        }
-        catch (std::invalid_argument & e)
-        {
-            input_addr.pop_back();
-            throw e;
-        }
-    }
-
+    // Handle MIPS inputs
     else
-        SimulatorError("Invalid data segment input.");
+    {
+        // Save the base input for later (for saving to file) and turn registers into their
+        // numerical forms (i.e. $sp --> 29)
+        std::string saved_input = input;
+        input = replace_registers(input);
 
-    // If this instruction was not produced via a pseudo instruction,
-    // append it onto the input list.
-    if (!sim_currently_pseudo)
-        valid_sim_inputs.push_back(saved_input);
+        // Isolate each part of the input to work with.
+        std::vector< std::string > strs = split_input(input);
+
+        // Handle a label at the beginning of the instruction
+        // ex: "labelname: addiu $s0, $s0, 42"
+        if (strs[0].back() == ':')
+        {
+            // Make sure the label is formatted correctly
+            if (!valid_label(strs[0].substr(0, strs[0].size() - 1)))
+                throw SimulatorError("Invalid label.");
+        
+            // Put label into the label hashtable
+            strs[0].pop_back();
+            if (labels.find(strs[0]) != labels.end())
+                throw SimulatorError("Duplicate label.");
+            labels[strs[0]] = program_counter;
+
+            // Append onto input list.
+            valid_sim_inputs.push_back(strs[0] + ":");
+
+            // Remove label from input for storage of the
+            // string of the command seperately if it was not
+            // the only thing input.
+            if (strs.size() > 1)
+            {
+                saved_input = saved_input.substr(strs[0].size() + 2);
+            }
+            
+            // Remove the label from the strings and continue.
+            strs.erase(strs.begin());
+        }
+
+        // Make sure there is still stuff to do if a label was removed.
+        if (!strs.empty())
+        {
+            // Change hexidecimal and binary numbers into base 10.
+            format_immediates(strs);
+
+            // Handle the pseudoinstructions if necessary.
+            Instruction pseudo = Instruction(0);
+            if (current_segment == TEXT)
+            {
+                // Check for pseudoinstructions
+                pseudo = is_pseudo(strs[0], strs.back());
+                if (pseudo)
+                {
+                    sim_currently_pseudo = true;
+                    handle_pseudo(pseudo, strs);
+                    sim_currently_pseudo = false;
+            
+                    // Append onto input list.
+                    valid_sim_inputs.push_back(saved_input);
+                }
+            }
+
+            // If there was no pseudoinstruction handled
+            if (!pseudo)
+            {
+                // Format the labels into base 10 numbers from map.
+                replace_labels(strs);
+
+                // '.' input, check to see if it is a segment change or
+                // if it denotes an entrypoint (".globl main"). If not,
+                // check to see if you are in the data segment and act
+                // accordingly depending on the input.
+                if (strs[0][0] == '.')
+                {
+                    // Segment change
+                    if (strs.size() == 1)
+                    {
+                        if (strs[0] == ".text")
+                        {
+                            // Do nothing if already in text segment.
+                            if (current_segment == TEXT)
+                            {
+                                // Append onto input list.
+                                valid_sim_inputs.push_back(saved_input);
+                            }
+
+                            // Switch to text segment.
+                            else
+                            {
+                                current_segment = TEXT;
+                                data_seg_addr = program_counter;
+                                program_counter = text_seg_addr;
+                            }
+                        }
+
+                        else if (strs[0] == ".data")
+                        {
+                            // Do nothing if already in data segment.
+                            if (current_segment == DATA)
+                            {
+                                // Append onto input list.
+                                valid_sim_inputs.push_back(saved_input);
+                                return;
+                            }
+
+                            // Switch to data segment.
+                            else
+                            {
+                                current_segment = DATA;
+                                text_seg_addr = program_counter;
+                                program_counter = data_seg_addr;
+                            }
+                        }
+
+                        // Append onto input list.
+                        valid_sim_inputs.push_back(saved_input);
+                    }
+
+                    // ".globl < label > "
+                    // Simply just put this onto the input list.
+                    else if (strs.size() == 2 && strs[0] == ".globl")
+                    {
+                        if (!valid_label(strs[1]))
+                            throw SimulatorError("Invalid label.");
+
+                        // Append onto input list.
+                        valid_sim_inputs.push_back(saved_input);
+                    }
+
+                    // If the input did not fall into the above categories, it is a data segment input.
+                    else
+                    {
+                        add_to_data_segment(strs);
+                    }
+                }
+
+                // No special '.' character, handle text segment input
+                else
+                {
+                    // If you get here somehow, you must have created an invalid data segment
+                    // input that did not get captured correctly (forgot the '.'?).
+                    if (current_segment != TEXT)
+                    {
+                        throw SimulatorError("Invalid data segment input.");
+                    }
+
+                    // Perform encoding and execute.
+                    uint32_t encoding = encode(strs);
+
+                    // DEBUGGING
+                    // std::cout << std::bitset<32>(encoding) << std::endl;
+
+                    // Save where the input instruction lives in the text segment.
+                    input_addr.push_back({input, program_counter});
+
+                    // Attempt execution of the encoded instruction.
+                    try
+                    {
+                        uint32_t old_pc = program_counter;
+                        execute(encoding);
+            
+                        // Store the encoding
+                        // >> 2 is used to index the text segment
+                        // because instruction addresses are 4 bytes large.
+                        text[(old_pc - TEXT_START) >> 2] = encoding;
+            
+                        // if you jumped, execute instructions at that location
+                        // until you are back where we are supposed to be.
+                        while (program_counter != old_pc + 4)
+                        {
+                            execute(text[(program_counter - TEXT_START) >> 2]);
+                        }
+                    }
+                    catch (SimulatorError & e)
+                    {
+                        input_addr.pop_back();
+                        throw e;
+                    }
+                    catch (std::invalid_argument & e)
+                    {
+                        input_addr.pop_back();
+                        throw e;
+                    }
+
+                    // If this instruction was not produced via a pseudo instruction,
+                    // append it onto the input list.
+                    if (!sim_currently_pseudo)
+                        valid_sim_inputs.push_back(saved_input);
+                } // else (for handling text segment input)
+            } // if (!pseudo)
+        } // if (!strs.empty())
+    } // else (for handling mips instructions)
     
     return;
 }
 
+// 31 --> "$ra"
 std::string Simulator::uint_to_reg(const unsigned int reg) const
 {
-    switch (reg)
+    // Array to store the values.
+    static const std::string uint_to_reg_arr[32] =
+        {"$zero","$at","$v0","$v1",
+         "$a0","$a1","$a2","$a3",
+         "$t0","$t1","$t2","$t3",
+         "$t4","$t5","$t6","$t7",
+         "$s0","$s1","$s2","$s3",
+         "$s4","$s5","$s6","$s7",
+         "$t8","$t9","$k0","$k1",
+         "$gp","$sp","$fp","$ra" };
+   
+    if (reg > 31)
     {
-        case 0:   return "$zero";
-        case 1:   return "$at";
-        case 2:   return "$v0";
-        case 3:   return "$v1";
-        case 4:   return "$a0";
-        case 5:   return "$a1";
-        case 6:   return "$a2";
-        case 7:   return "$a3";
-        case 8:   return "$t0";
-        case 9:   return "$t1";
-        case 10:  return "$t2";
-        case 11:  return "$t3";
-        case 12:  return "$t4";
-        case 13:  return "$t5";
-        case 14:  return "$t6";
-        case 15:  return "$t7";
-        case 16:  return "$s0";
-        case 17:  return "$s1";
-        case 18:  return "$s2";
-        case 19:  return "$s3";
-        case 20:  return "$s4";
-        case 21:  return "$s5";
-        case 22:  return "$s6";
-        case 23:  return "$s7";
-        case 24:  return "$t8";
-        case 25:  return "$t9";
-        case 26:  return "$k0";
-        case 27:  return "$k1";
-        case 28:  return "$gp";
-        case 29:  return "$sp";
-        case 30:  return "$fp";
-        case 31:  return "$ra";
+        throw SimulatorError("Invalid register number sent to int_to_reg().");
     }
 
-    throw SimulatorError("Invalid register number sent to int_to_reg().");
+    return uint_to_reg_arr[reg];
 }
 
-
+// Display the interpreter help menu
 void Simulator::print_simulator_help() const
 {
     std::cout << std::setfill('=') << std::setw(65) << '\n';
@@ -398,6 +412,7 @@ void Simulator::print_simulator_help() const
     return;
 }
 
+// 97 --> "'a'", 10 --> "'\\n'"
 std::string Simulator::char_value_str(const unsigned int val) const
 {
     switch (val)
@@ -415,6 +430,8 @@ std::string Simulator::char_value_str(const unsigned int val) const
     }
 }
 
+// Print human-readable table of the registers
+// in interpreter mode
 void Simulator::print_registers() const
 {
     std::cout << std::setfill('=') << std::setw(65) << '\n';
@@ -472,6 +489,7 @@ void Simulator::print_registers() const
 }
 
 
+// Print a list of human-readable labels in the interpreter mode
 void Simulator::print_labels() const
 {
     std::cout << std::setfill('=') << std::setw(65) << '\n';
@@ -494,12 +512,11 @@ void Simulator::print_labels() const
     return;
 }
 
-/*
-  Your data will still be located in the correct spots, but
-  if printed each and every byte the printing will be EXTREMELY
-  long, so I opted to print out multiples of 4 so you can see
-  any .word values that are input.
-*/
+// Display human-readable table of the data segment in interpreter mode.
+// Your data will still be located in the correct spots, but
+// if this printed each and every byte the output will be EXTREMELY
+// long, so I opted to print out multiples of 4 so you can see
+// any .word values that are input.
 void Simulator::print_data_segment() const
 {
     uint32_t max_addr = (current_segment == DATA ? program_counter : data_seg_addr);
@@ -566,6 +583,7 @@ void Simulator::print_data_segment() const
 ///// Read mode functions /////
 ///////////////////////////////
 
+// Read from file and execute mips instructions.
 void Simulator::run_read_mode()
 {
     current_segment = NONE;
@@ -574,6 +592,7 @@ void Simulator::run_read_mode()
     std::ifstream file;
     while (true)
     {
+        // Open file
         std::cout << "Input file to run: ";
         std::getline(std::cin, filename);
         file.open(filename, std::ios::in);
@@ -583,6 +602,7 @@ void Simulator::run_read_mode()
 
     try
     {
+        // Attempt to execute program.
         run_file(file);
     }
     catch (SimulatorError & e)
@@ -594,6 +614,9 @@ void Simulator::run_read_mode()
     return;
 }
 
+// Given a stream to a file, load the file contents and
+// then run through the instructions after they have all been
+// loaded.
 void Simulator::run_file(std::ifstream & file)
 {
     std::string line;
@@ -602,6 +625,7 @@ void Simulator::run_file(std::ifstream & file)
     {
         try
         {
+            // Prepare the line to be encoded
             prepare_read_input(line, i);
             ++i;
         }
@@ -678,19 +702,24 @@ void Simulator::run_file(std::ifstream & file)
     return;
 }
 
+
 void Simulator::prepare_read_input(std::string input, unsigned int line)
 {
+    // Get rid of comments and get rid of extra whitespace.
     input = truncate_comments(input);
     input = strip_useless_whitespace(input);
-    
-    if (input.size() == 0)
-        return; // Nothing to read.
 
+    // Ignore empty lines.
+    if (input.size() == 0)
+        return;
+
+    // Get numerical register values.
     input = replace_registers(input);
 
+    // Split input into individual parts to process
     std::vector< std::string > strs = split_input(input);
 
-    // Labels
+    // Handle labels
     if (strs[0].back() == ':')
     {
         if (current_segment == NONE)
@@ -702,190 +731,193 @@ void Simulator::prepare_read_input(std::string input, unsigned int line)
         
         if (labels.find(strs[0]) != labels.end())
             throw SimulatorError("Duplicate label.");
-        labels[strs[0]] = program_counter;
 
-        // Stop computing if that was the only thing that was
-        // input.
-        if (strs.size() == 1)
-            return;
+        // Save the label with address
+        labels[strs[0]] = program_counter;
 
         // Remove the label from the strings and continue.
         strs.erase(strs.begin());
     }
 
-    // Change binary and hex numbers into base 10 for consistent computation.
-    format_immediates(strs);
-
-    // Handle the pseudoinstructions if necessary.
-    if (current_segment == TEXT)
+    // Make sure there wasnt only a label
+    if (!strs.empty())
     {
-        // Check for pseudoinstructions
-        Instruction pseudo = is_pseudo(strs[0], strs.back());
-        if (pseudo)
-        {
-            switch (pseudo)
-            {
-                case MOVE:
-                    if (strs.size() != 3)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    // Only one instruction, dont move PC.
-                    break;
-                case LI:
-                    if (strs.size() != 3)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4; // Read mode will force 2 instructions for consistency.
-                    break;
-                case LW:
-                    if (strs.size() != 3)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 8;
-                    break;
-                case LA:
-                    if (strs.size() != 3)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4;
-                    break;
-                case BLT:
-                    if (strs.size() != 4)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4;
-                    break;
-                case BLE:
-                    if (strs.size() != 4)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4;
-                    break;
-                case BGT:
-                    if (strs.size() != 4)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4;
-                    break;
-                case BGE:
-                    if (strs.size() != 4)
-                        throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
-                    program_counter += 4;
-                    break;
-            }
-        }
-    }
+        // Change binary and hex numbers into base 10 for consistent computation.
+        format_immediates(strs);
 
-    /*
-       '.' input, check to see if it is a segment change or
-       if it denotes an entrypoint (".globl main"). If not,
-       check to see if you are in the data segment and act
-       accordingly depending on the input.
-    */
-    if (strs[0][0] == '.')
-    {
-        // Segment change
-        if (strs.size() == 1)
+        // Handle the pseudoinstructions if necessary.
+        if (current_segment == TEXT)
         {
-            if (strs[0] == ".text")
+            // Check for pseudoinstructions, throw errors if they are not formatted correctly.
+            Instruction pseudo = is_pseudo(strs[0], strs.back());
+            if (pseudo)
             {
-                switch (current_segment)
+                switch (pseudo)
                 {
-                    case TEXT: // Ignore
+                    case MOVE:
+                        if (strs.size() != 3)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        // Only one instruction, dont move PC.
                         break;
-                    case DATA:
-                        current_segment = TEXT;
-                        data_seg_addr = program_counter;
-                        program_counter = text_seg_addr;
+                    case LI:
+                        if (strs.size() != 3)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4; // Read mode will force 2 instructions for consistency.
                         break;
-                    case NONE:
-                        current_segment = TEXT;
-                        program_counter = text_seg_addr;
+                    case LW:
+                        if (strs.size() != 3)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 8;
+                        break;
+                    case LA:
+                        if (strs.size() != 3)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4;
+                        break;
+                    case BLT:
+                        if (strs.size() != 4)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4;
+                        break;
+                    case BLE:
+                        if (strs.size() != 4)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4;
+                        break;
+                    case BGT:
+                        if (strs.size() != 4)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4;
+                        break;
+                    case BGE:
+                        if (strs.size() != 4)
+                            throw SimulatorError("Invalid parameters for pseudoinstruction " + strs[0] + ".");
+                        program_counter += 4;
                         break;
                 }
+            } // if (pseudo)
+        } // if (current_segment == TEXT)
+
+        // '.' input, check to see if it is a segment change or
+        // if it denotes an entrypoint (".globl main"). If not,
+        // check to see if you are in the data segment and act
+        // accordingly depending on the input.
+        if (strs[0][0] == '.')
+        {
+            // Segment change
+            if (strs.size() == 1)
+            {
+                if (strs[0] == ".text")
+                {
+                    switch (current_segment)
+                    {
+                        case TEXT: // Ignore
+                            break;
+                        case DATA:
+                            current_segment = TEXT;
+                            data_seg_addr = program_counter;
+                            program_counter = text_seg_addr;
+                            break;
+                        case NONE:
+                            current_segment = TEXT;
+                            program_counter = text_seg_addr;
+                            break;
+                    }
+                }
+
+                else if (strs[0] == ".data")
+                {
+                    switch (current_segment)
+                    {
+                        case TEXT:
+                            current_segment = DATA;
+                            text_seg_addr = program_counter;
+                            program_counter = data_seg_addr;
+                            break;
+                        case DATA: // Ignore
+                            break;
+                        case NONE:
+                            current_segment = DATA;
+                            program_counter = data_seg_addr;
+                    }
+                }
+            }
+
+            // ".globl < label > "
+            // Simply just put this onto the input list.
+            else if (strs.size() == 2 && strs[0] == ".globl")
+            {
+                if (!valid_label(strs[1]))
+                    throw SimulatorError("Invalid label.");
+                if (entrypoint_label != "")
+                    throw SimulatorError("Entrypoint already set (Duplicate .globl).");
+
+                // Set the entrypoint label.
+                entrypoint_label = strs[1];
 
                 return;
             }
 
-            else if (strs[0] == ".data")
+            else
             {
-                switch (current_segment)
+                // Move forward prorgam counter based on how much data
+                // is input for label computation.
+                std::string type = strs[0];
+                if (type == ".word")
                 {
-                    case TEXT:
-                        current_segment = DATA;
-                        text_seg_addr = program_counter;
-                        program_counter = data_seg_addr;
-                        break;
-                    case DATA: // Ignore
-                        break;
-                    case NONE:
-                        current_segment = DATA;
-                        program_counter = data_seg_addr;
+                    program_counter += (strs.size() - 1) * 4;
                 }
+                else if (type == ".half")
+                {
+                    program_counter += (strs.size() - 1) * 2;
+                }
+                else if (type == ".byte")
+                {
+                    program_counter += (strs.size() - 1);
+                }
+                else if (type == ".space")
+                {
+                    program_counter += std::stoi(strs[1]);
+                }
+                else if (type == ".asciiz")
+                {
+                    read_format_ascii_escape_sequences(strs[1]);
+                    program_counter += strs[1].size() - 1;
+                }
+                else if (type == ".ascii")
+                {
+                    read_format_ascii_escape_sequences(strs[1]);
+                    program_counter += strs[1].size() - 2;
+                }
+                else
+                    throw SimulatorError("Unsupported data segment data type.");
 
-                return;
+                // store data segment input with address 0, address
+                // will get worked out in the data storage.
+                to_be_encoded.push_back({strs, 0, false, line});
             }
+        } // if (strs[0][0] == '.')
+
+        // Handle text segment inputs
+        else if (current_segment = TEXT)
+        {
+            // Grab instruction to be encoded later.
+            to_be_encoded.push_back({strs, program_counter, true, line});
+            program_counter += 4;
         }
 
-        // ".globl < label > "
-        // Simply just put this onto the input list.
-        if (strs.size() == 2 && strs[0] == ".globl")
-        {
-            if (!valid_label(strs[1]))
-                throw SimulatorError("Invalid label.");
-            if (entrypoint_label != "")
-                throw SimulatorError("Entrypoint already set (Duplicate .globl).");
-
-            entrypoint_label = strs[1];
-
-            return;
-        }
-
-
-        // Move forward prorgam counter based on how much data
-        // is input for label computation.
-        std::string type = strs[0];
-        if (type == ".word")
-        {
-            program_counter += (strs.size() - 1) * 4;
-        }
-        else if (type == ".half")
-        {
-            program_counter += (strs.size() - 1) * 2;
-        }
-        else if (type == ".byte")
-        {
-            program_counter += (strs.size() - 1);
-        }
-        else if (type == ".space")
-        {
-            program_counter += std::stoi(strs[1]);
-        }
-        else if (type == ".asciiz")
-        {
-            read_format_ascii_escape_sequences(strs[1]);
-            program_counter += strs[1].size() - 1;
-        }
-        else if (type == ".ascii")
-        {
-            read_format_ascii_escape_sequences(strs[1]);
-            program_counter += strs[1].size() - 2;
-        }
+        // If you somehow made it here, you have a very interesting input in the
+        // data segment.
         else
-            throw SimulatorError("Unsupported data segment data type.");
-        
-        // store data segment input with address 0, address
-        // will get worked out in the data storage.
-        to_be_encoded.push_back({strs, 0, false, line});
-    }
+            SimulatorError("Invalid data segment input.");
+       
+    } // if (!strs.empty())
 
-    // Text segment store instruction for encoding.
-    if (current_segment == TEXT)
-    {
-        to_be_encoded.push_back({strs, program_counter, true, line});
-        program_counter += 4;
-    }
-
-    else
-        SimulatorError("Invalid data segment input.");
-    
     return;
 }
 
 
+// Read file mode handling of pseudoinstructions
 void Simulator::read_handle_pseudo(const Instruction & ins,
                                    const std::vector< std::string > & strs,
                                    const uint32_t & addr,
@@ -894,7 +926,9 @@ void Simulator::read_handle_pseudo(const Instruction & ins,
 {
     uint32_t immediate;
     uint16_t param;
-    
+
+    // Split each pseudoinstruction into its composite
+    // instructions and encode them.
     switch (ins)
     {
         case MOVE:
@@ -959,7 +993,8 @@ void Simulator::read_handle_pseudo(const Instruction & ins,
     return;
 }
 
-
+// Format the escape sequences back to normal
+// "'\\n'" --> "'\n'"
 void Simulator::read_format_ascii_escape_sequences(std::string & s) const
 {
     int n = s.size() - 1;
@@ -1007,6 +1042,7 @@ void Simulator::read_format_ascii_escape_sequences(std::string & s) const
 ///// Shared functions /////
 ////////////////////////////
 
+// Get rid of comments
 std::string Simulator::truncate_comments(std::string s) const
 {
     unsigned int i = 0;
@@ -1017,6 +1053,7 @@ std::string Simulator::truncate_comments(std::string s) const
     return s.substr(0, i);
 }
 
+// Make sure whitespace is uniform for string processing.
 std::string Simulator::strip_useless_whitespace(std::string s) const
 {
     unsigned int start = 0;
@@ -1068,40 +1105,45 @@ std::string Simulator::get_numerical_register_str(std::string s) const
         return s;
     }
 
-    // Has numbers and letters.
-    if (s == "at")       return "1";
-    else if (s == "v0")  return "2";
-    else if (s == "v1")  return "3";
-    else if (s == "a0")  return "4";
-    else if (s == "a1")  return "5";
-    else if (s == "a2")  return "6";
-    else if (s == "a3")  return "7";
-    else if (s == "t0")  return "8";
-    else if (s == "t1")  return "9";
-    else if (s == "t2")  return "10";
-    else if (s == "t3")  return "11";
-    else if (s == "t4")  return "12";
-    else if (s == "t5")  return "13";
-    else if (s == "t6")  return "14";
-    else if (s == "t7")  return "15";
-    else if (s == "s0")  return "16";
-    else if (s == "s1")  return "17";
-    else if (s == "s2")  return "18";
-    else if (s == "s3")  return "19";
-    else if (s == "s4")  return "20";
-    else if (s == "s5")  return "21";
-    else if (s == "s6")  return "22";
-    else if (s == "s7")  return "23";
-    else if (s == "t8")  return "24";
-    else if (s == "t9")  return "25";
-    else if (s == "k0")  return "26";
-    else if (s == "k1")  return "27";
-    else if (s == "gp")  return "28";
-    else if (s == "sp")  return "29";
-    else if (s == "fp")  return "30";
-    else if (s == "ra")  return "31";
+    const static std::unordered_map<std::string, std::string> numerical_reg_map =
+        {
+            {"at", "1"},
+            {"v0", "2"},
+            {"v1", "3"},
+            {"a0", "4"},
+            {"a1", "5"},
+            {"a2", "6"},
+            {"a3", "7"},
+            {"t0", "8"},
+            {"t1", "9"},
+            {"t2", "10"},
+            {"t3", "11"},
+            {"t4", "12"},
+            {"t5", "13"},
+            {"t6", "14"},
+            {"t7", "15"},
+            {"s0", "16"},
+            {"s1", "17"},
+            {"s2", "18"},
+            {"s3", "19"},
+            {"s4", "20"},
+            {"s5", "21"},
+            {"s6", "22"},
+            {"s7", "23"},
+            {"t8", "24"},
+            {"t9", "25"},
+            {"k0", "26"},
+            {"k1", "27"},
+            {"gp", "28"},
+            {"sp", "29"},
+            {"fp", "30"},
+            {"ra", "31"},
+        };
     
-    throw SimulatorError("Invalid register.");
+    if (numerical_reg_map.find(s) == numerical_reg_map.end())
+        throw SimulatorError("Invalid register.");
+    
+    return numerical_reg_map.find(s)->second;
 }
 
 std::string Simulator::replace_registers(std::string s) const
@@ -1109,19 +1151,22 @@ std::string Simulator::replace_registers(std::string s) const
     unsigned int i = 0, n = s.size();
     while (i < n)
     {
+        // Find register $ symbol
         if (s[i] == '$')
         {
             ++i;
             unsigned int start = i, len = 0;
-            
+
             while (i + len < n && isalnum(s[i + len]))
                 ++len;
-            
+
+            // Isolate the register name and replace with
+            // its numerical representation
             std::string reg = s.substr(i, len);
             reg = get_numerical_register_str(reg);
             s.replace(i, len, reg);
             
-            i += reg.size() - 1; // -1 for the increment in the for loop.
+            i += reg.size() - 1; // -1 for the increment in the end of the loop.
             n -= len - reg.size();
         }
         ++i;
@@ -1130,6 +1175,9 @@ std::string Simulator::replace_registers(std::string s) const
     return s;
 }
 
+// Split the immediate and register values on instructions
+// like "lw $a0, 12($a0)"
+// "4($31)" --> { "$31", "4" }.
 std::vector< std::string > Simulator::split_immediate_and_register(const std::string & s) const
 {
     std::vector< std::string > ret = { "", "" };
@@ -1152,6 +1200,7 @@ std::vector< std::string > Simulator::split_immediate_and_register(const std::st
     return ret;
 }
 
+// Break up the input into space separated strings
 std::vector< std::string > Simulator::split_input(const std::string & s) const
 {
     std::vector< std::string > ret = { "" }; // There will be at least one.
@@ -1227,6 +1276,7 @@ std::vector< std::string > Simulator::split_input(const std::string & s) const
     return ret;
 }
 
+// Format immediates into base 10 numerical values
 void Simulator::format_immediates(std::vector< std::string > & strs) const
 {
     for (std::string & s : strs)
@@ -1283,6 +1333,7 @@ void Simulator::format_immediates(std::vector< std::string > & strs) const
     return;
 }
 
+// Replace labels with their address values
 void Simulator::replace_labels(std::vector< std::string > & strs) const
 {
     for (std::string & s : strs)
@@ -1292,6 +1343,7 @@ void Simulator::replace_labels(std::vector< std::string > & strs) const
     return;
 }
 
+// Add a piece of data into the data segment
 void Simulator::add_to_data_segment(const std::vector< std::string > & strs)
 {
     /*
@@ -1405,6 +1457,10 @@ void Simulator::add_to_data_segment(const std::vector< std::string > & strs)
     return;
 }
 
+// Return value of pseudoinstruction if it is one, also returns
+// Instruction(0) so it can be used a boolean condition.
+// Throws errors if you dont have a defined label included
+// with a pseudoinstruction that requires one.
 Instruction Simulator::is_pseudo(const std::string & s,
                                  const std::string & label) const
 {
@@ -1532,65 +1588,72 @@ void Simulator::handle_pseudo(const Instruction & ins,
     return;
 }
 
+// get the instruction object from the string that denotes it
 Instruction Simulator::get_instruction(const std::string & s) const
 {
-    if (s == "add")         return ADD;
-    else if (s == "addi")   return ADDI;
-    else if (s == "addiu")  return ADDIU;
-    else if (s == "addu")   return ADDU;
-    else if (s == "and")    return AND;
-    else if (s == "andi")   return ANDI;
-    else if (s == "beq")    return BEQ;
-    else if (s == "bne")    return BNE;
-    else if (s == "j")      return J;
-    else if (s == "jal")    return JAL;
-    else if (s == "jr")     return JR;
-    else if (s == "lbu")    return LBU;
-    else if (s == "lhu")    return LHU;
-    else if (s == "lui")    return LUI;
-    else if (s == "lw")     return LW;
-    else if (s == "nor")    return NOR;
-    else if (s == "or")     return OR;
-    else if (s == "ori")    return ORI;
-    else if (s == "slt")    return SLT;
-    else if (s == "slti")   return SLTI;
-    else if (s == "sltiu")  return SLTIU;
-    else if (s == "sltu")   return SLTU;
-    else if (s == "sll")    return SLL;
-    else if (s == "srl")    return SRL;
-    else if (s == "sb")     return SB;
-    else if (s == "sc")     return SC;
-    else if (s == "sh")     return SH;
-    else if (s == "sw")     return SW;
-    else if (s == "sub")    return SUB;
-    else if (s == "subu")   return SUBU;
-    else if (s == "div")    return DIV;
-    else if (s == "divu")   return DIVU;
-    else if (s == "mfhi")   return MFHI;
-    else if (s == "mflo")   return MFLO;
-    else if (s == "mult")   return MULT;
-    else if (s == "multu")  return MULTU;
-    else if (s == "sra")    return SRA;
-    else if (s == "sllv")   return SLLV;
-    else if (s == "srav")   return SRAV;
-    else if (s == "srlv")   return SRLV;
-    else if (s == "xor")    return XOR;
-    else if (s == "xori")   return XORI;
-    else if (s == "bgtz")   return BGTZ;
-    else if (s == "blez")   return BLEZ;
-    else if (s == "jalr")   return JALR;
-    else if (s == "lb")     return LB;
-    else if (s == "lh")     return LH;   
-    else if (s == "mthi")   return MTHI;
-    else if (s == "mtlo")   return MTLO;
-    else if (s == "syscall")return SYSCALL;
-    else if (s == "seq")    return SEQ;
-    else if (s == "bgez")   return BGEZ;
-    else if (s == "bltz")   return BLTZ;
+    const static std::unordered_map< std::string, Instruction > string_instruction_map = {
+        { "add",    ADD    },
+        { "addi",   ADDI   },
+        { "addiu",  ADDIU  },
+        { "addu",   ADDU   },
+        { "and",    AND    },
+        { "andi",   ANDI   },
+        { "beq",    BEQ    },
+        { "bne",    BNE    },
+        { "j",      J      },
+        { "jal",    JAL    },
+        { "jr",     JR     },
+        { "lbu",    LBU    },
+        { "lhu",    LHU    },
+        { "lui",    LUI    },
+        { "lw",     LW     },
+        { "nor",    NOR    },
+        { "or",     OR     },
+        { "ori",    ORI    },
+        { "slt",    SLT    },
+        { "slti",   SLTI   },
+        { "sltiu",  SLTIU  },
+        { "sltu",   SLTU   },
+        { "sll",    SLL    },
+        { "srl",    SRL    },
+        { "sb",     SB     },
+        { "sc",     SC     },
+        { "sh",     SH     },
+        { "sw",     SW     },
+        { "sub",    SUB    },
+        { "subu",   SUBU   },
+        { "div",    DIV    },
+        { "divu",   DIVU   },
+        { "mfhi",   MFHI   },
+        { "mflo",   MFLO   },
+        { "mult",   MULT   },
+        { "multu",  MULTU  },
+        { "sra",    SRA    },
+        { "sllv",   SLLV   },
+        { "srav",   SRAV   },
+        { "srlv",   SRLV   },
+        { "xor",    XOR    },
+        { "xori",   XORI   },
+        { "bgtz",   BGTZ   },
+        { "blez",   BLEZ   },
+        { "jalr",   JALR   },
+        { "lb",     LB     },
+        { "lh",     LH     },
+        { "mthi",   MTHI   },
+        { "mtlo",   MTLO   },
+        { "syscall", SYSCALL },
+        { "seq",    SEQ    },
+        { "bgez",   BGEZ   },
+        { "bltz",   BLTZ   }
+    };
 
-    throw SimulatorError("Unsupported instruction " + s + ", no opcode found.");
+    if (string_instruction_map.find(s) == string_instruction_map.end())
+        throw SimulatorError("Unsupported instruction " + s + ", no opcode found.");
+
+    return string_instruction_map.find(s)->second;
 }
 
+// Get the opcode of a given instruction for encoding
 uint8_t Simulator::get_opcode(const Instruction & instruction) const
 {
     switch (instruction)
@@ -1653,7 +1716,8 @@ uint8_t Simulator::get_opcode(const Instruction & instruction) const
     }
 }
 
-
+// Encode the given arguments into a 32 bit integer to be stored
+// into the text segment.
 uint32_t Simulator::encode(const std::vector< std::string > & args) const
 {
     Instruction instruction = get_instruction(args[0]);
@@ -1798,6 +1862,7 @@ uint32_t Simulator::encode(const std::vector< std::string > & args) const
     return encoding;
 }
 
+// uint8_t opcode to instruction type conversion
 Instruction Simulator::get_instruction(const uint8_t target, const bool is_funct) const
 {
     // R Style encodings.
@@ -1869,6 +1934,8 @@ Instruction Simulator::get_instruction(const uint8_t target, const bool is_funct
     throw SimulatorError("Unsupported target encoding in get_instruction().");
 }
 
+// Execute an instruction using the array of method
+// pointers.
 void Simulator::execute(const uint32_t & encoded)
 {
     /*
@@ -1895,7 +1962,10 @@ void Simulator::execute(const uint32_t & encoded)
     return;
 }
 
-
+// Given an address, determine which segment it is located in,
+// and using that information also get the starting index
+// of the location to handle data, heap, and stack segments
+// correctly.
 void Simulator::get_location_and_start(const uint32_t & addr,
                                        uint8_t * & location,
                                        unsigned int & start)
@@ -2376,7 +2446,6 @@ void Simulator::ins_div(const uint32_t & encoded)
     return;
 }
 
-// HOW DO UNSIGNED HERE???
 void Simulator::ins_divu(const uint32_t & encoded)
 {
     uint8_t rt = (encoded >> 16) & 0b11111;
